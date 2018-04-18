@@ -1,5 +1,6 @@
 package com.avast.clients.rabbitmq
 
+import com.avast.clients.rabbitmq.api.RabbitMQManualConsumer
 import com.avast.metrics.scalaapi.Monitor
 import com.rabbitmq.client.ShutdownSignalException
 import com.typesafe.config.Config
@@ -53,6 +54,9 @@ class DefaultRabbitMQConnection[F[_]: FromTask: ToTask](connection: ServerConnec
         .fromConfig[F, A](config.getConfig(configName), createChannel(), info, blockingScheduler, monitor, consumerListener)(readAction)
     }
   }
+
+  def newManualConsumer[A: DeliveryConverter](configName: String, monitor: Monitor)(
+      implicit scheduler: Scheduler): DefaultRabbitMQManualConsumer[F, A] = ???
 
   def newProducer[A: ProductConverter](configName: String, monitor: Monitor): DefaultRabbitMQProducer[F, A] = {
     addAutoCloseable {
