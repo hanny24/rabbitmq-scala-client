@@ -351,4 +351,49 @@ class LiveTest extends FunSuite with Eventually with ScalaFutures with StrictLog
       assertResult(10)(poisoned.get())
     }
   }
+
+  test("manual consumer") {
+    val c = createConfig()
+    import c._
+
+    val processed = new AtomicInteger(0)
+
+    val rabbitConnection = RabbitMQConnection.fromConfig[Task](config, ex)
+
+    val consumer = rabbitConnection.newManualConsumer[Bytes]("consumer", Monitor.noOp())
+
+    val sender = rabbitConnection.newProducer("producer", Monitor.noOp())
+
+    for (_ <- 1 to 10) {
+      sender.send("test", Bytes.copyFromUtf8(Random.nextString(10))).runAsync.futureValue
+    }
+
+    eventually(timeout = timeout(Span(5, Seconds))) {
+      assertResult(10)(testHelper.getMessagesCount(queueName))
+    }
+
+    for (_ <- 1 to 3) {
+      consumer.get { _ =>
+        processed.incrementAndGet()
+        Task.now(DeliveryResult.Ack)
+      }
+    }
+
+    eventually(timeout = timeout(Span(5, Seconds))) {
+      assertResult(7)(testHelper.getMessagesCount(queueName))
+      assertResult(3)(processed.get())
+    }
+
+    for (_ <- 1 to 7) {
+      consumer.get { _ =>
+        processed.incrementAndGet()
+        Task.now(DeliveryResult.Ack)
+      }
+    }
+
+    eventually(timeout = timeout(Span(5, Seconds))) {
+      assertResult(0)(testHelper.getMessagesCount(queueName))
+      assertResult(10)(processed.get())
+    }
+  }
 }

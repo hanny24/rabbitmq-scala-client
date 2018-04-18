@@ -149,6 +149,43 @@ private[rabbitmq] object DefaultRabbitMQClientFactory extends LazyLogging {
     }
   }
 
+  object ManualConsumer {
+
+    def fromConfig[F[_]: ToTask, A: DeliveryConverter](
+        providedConfig: Config,
+        channel: ServerChannel,
+        channelFactoryInfo: RabbitMQConnectionInfo,
+        blockingScheduler: Scheduler,
+        monitor: Monitor)(implicit scheduler: Scheduler): DefaultRabbitMQManualConsumer[F, A] = {
+
+      val mergedConfig = providedConfig.withFallback(ConsumerDefaultConfig)
+
+      // merge consumer binding defaults
+      val updatedConfig = {
+        val updated = mergedConfig.as[Seq[Config]]("bindings").map { bindConfig =>
+          bindConfig.withFallback(ConsumerBindingDefaultConfig).root()
+        }
+
+        import scala.collection.JavaConverters._
+
+        mergedConfig.withValue("bindings", ConfigValueFactory.fromIterable(updated.asJava))
+      }
+
+      val consumerConfig = updatedConfig.wrapped.as[ConsumerConfig]("root")
+
+      create[F, A](consumerConfig, channel, channelFactoryInfo, blockingScheduler, monitor)
+    }
+
+    def create[F[_]: ToTask, A: DeliveryConverter](consumerConfig: ConsumerConfig,
+                                                   channel: ServerChannel,
+                                                   channelFactoryInfo: RabbitMQConnectionInfo,
+                                                   blockingScheduler: Scheduler,
+                                                   monitor: Monitor)(implicit scheduler: Scheduler): DefaultRabbitMQManualConsumer[F, A] = {
+
+      prepareManualConsumer(consumerConfig, channelFactoryInfo, channel, blockingScheduler, monitor)
+    }
+  }
+
   object Declarations {
     def declareExchange(config: Config, channel: ServerChannel, channelFactoryInfo: RabbitMQConnectionInfo): Task[Unit] = {
       declareExchange(config.withFallback(DeclareExchangeDefaultConfig).as[DeclareExchange], channel, channelFactoryInfo)
@@ -281,6 +318,52 @@ private[rabbitmq] object DefaultRabbitMQClientFactory extends LazyLogging {
     bindQueues(channelFactoryInfo, channel, consumerConfig)
 
     prepareConsumer(consumerConfig, channelFactoryInfo, channel, readAction, consumerListener, blockingScheduler, monitor)
+  }
+
+  private def prepareManualConsumer[F[_]: ToTask, A: DeliveryConverter](
+      consumerConfig: ConsumerConfig,
+      channelFactoryInfo: RabbitMQConnectionInfo,
+      channel: ServerChannel,
+      blockingScheduler: Scheduler,
+      monitor: Monitor)(implicit scheduler: Scheduler): DefaultRabbitMQManualConsumer[F, A] = {
+
+    import consumerConfig._
+
+    // auto declare exchanges
+    consumerConfig.bindings.foreach { bind =>
+      import bind.exchange._
+
+      // parse it only if it's needed
+      if (declare.getBoolean("enabled")) {
+        val d = declare.wrapped.as[AutoDeclareExchange]("root")
+
+        declareExchange(name, channelFactoryInfo, channel, d)
+      }
+    }
+
+    // auto declare queue
+    {
+      import consumerConfig.declare._
+
+      if (enabled) {
+        logger.info(s"Declaring queue '$queueName' in virtual host '${channelFactoryInfo.virtualHost}'")
+        declareQueue(channel, queueName, durable, exclusive, autoDelete, arguments)
+      }
+    }
+
+    // set prefetch size (per consumer)
+    channel.basicQos(consumerConfig.prefetchCount)
+
+    // auto bind
+    bindQueues(channelFactoryInfo, channel, consumerConfig)
+
+    val finalBlockingScheduler: Scheduler = if (useKluzo) {
+      Monix.wrapScheduler(scheduler)
+    } else {
+      scheduler
+    }
+
+    new DefaultRabbitMQManualConsumer[F, A](name, channel, queueName, useKluzo, monitor, failureAction, finalBlockingScheduler)
   }
 
   private[rabbitmq] def declareQueue(channel: ServerChannel,
