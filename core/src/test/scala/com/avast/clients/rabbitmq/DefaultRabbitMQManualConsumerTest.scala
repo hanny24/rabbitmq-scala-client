@@ -10,6 +10,7 @@ import com.rabbitmq.client.impl.recovery.AutorecoveringChannel
 import com.rabbitmq.client.{Envelope, GetResponse}
 import monix.eval.Task
 import monix.execution.Scheduler
+import monix.execution.Scheduler.Implicits.global
 import org.mockito.Matchers
 import org.mockito.Matchers.any
 import org.mockito.Mockito._
